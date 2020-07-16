@@ -1,5 +1,6 @@
 require 'puppetserver/ca/config/puppet'
 require 'puppetserver/ca/errors'
+require 'puppetserver/ca/host'
 require 'puppetserver/ca/local_certificate_authority'
 require 'puppetserver/ca/utils/cli_parsing'
 require 'puppetserver/ca/utils/file_system'
@@ -23,7 +24,7 @@ base_settings = {
 }
 
 # Just do a wizard thing here
-type = ask('What type of CA would you like to generate? (root or intermediate)')
+type = ask('What type of CA would you like to generate? (root, intermediate, intcsronly)')
 
 case type
 when 'root'
@@ -46,7 +47,7 @@ when 'root'
 
   puts "CA Generated, writing to disk..."
   FileUtils.mkdir_p 'root_ca'
-when 'intermediate'
+when 'intermediate', 'intcsronly'
   settings_overrides = {}
   # Set the details of the new cert
   settings_overrides[:ca_name]           = ask('Subject of this intermediate CA (Usually the FQDN of the Server):')
@@ -65,17 +66,29 @@ when 'intermediate'
 
   # Check that the root CA actually exists
   unless ca.ssl_assets_exist?
-    raise "Couldn't find root CA assets at the follwoing locations: #{base_settings[:cacert]}, #{base_settings[:cakey]}, #{base_settings[:cacrl]}"
+    raise "Couldn't find root CA assets at the following locations: #{base_settings[:cacert]}, #{base_settings[:cakey]}, #{base_settings[:cacrl]}"
   end
 
-  # Actuslly generate the intermediate
-  ca.create_intermediate_cert(ca.key, ca.cert)
+  if type == 'intcsronly'
+    intcsrfile = "#{folder}/intermediate.csr"
+    host = Puppetserver::Ca::Host.new(signing_digest.digest)
+    privkey = host.create_private_key(settings[:keylength])
+    int_csr = host.create_csr(name: settings[:ca_name], key: privkey)
 
-  files = [
-    ["#{folder}/ca_bundle.pem", [ca.cert.to_s, ca.cert_bundle[0].to_s].join("\n")],
-    ["#{folder}/crl_chain.pem",  [ca.crl.to_s,  ca.crl_chain[0].to_s].join("\n")],
-    [settings[:hostprivkey], ca.key.to_s],
-  ]
+    files = [
+      ["#{folder}/intermediate.csr", int_csr.to_s],
+      [settings[:hostprivkey], privkey.to_s],
+    ]
+  else
+    # Actually generate the intermediate
+    ca.create_intermediate_cert(ca.key, ca.cert)
+
+    files = [
+      ["#{folder}/ca_bundle.pem", [ca.cert.to_s, ca.cert_bundle[0].to_s].join("\n")],
+      ["#{folder}/crl_chain.pem",  [ca.crl.to_s,  ca.crl_chain[0].to_s].join("\n")],
+      [settings[:hostprivkey], ca.key.to_s],
+    ]
+  end
 
   FileUtils.mkdir_p settings[:ca_name]
 end
